@@ -69,7 +69,7 @@ After=default.target
 
 [Service]
 Type=oneshot
-ExecStart=$LAUNCHER --all --quiet
+ExecStart=$LAUNCHER --all --x86 --quiet
 # One slow prefix must not hold up the session.
 TimeoutStartSec=1800
 
@@ -80,19 +80,42 @@ EOF
 systemctl --user daemon-reload
 systemctl --user enable "$APP_NAME.service" >/dev/null
 
+# A clickable launcher, because on a handheld the on-screen keyboard belongs to
+# Steam: if a fix required closing Steam and typing a command, it would be
+# unusable exactly when you need it.
+say "Adding a desktop launcher"
+DESKTOP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+install -d "$DESKTOP_DIR"
+cat > "$DESKTOP_DIR/$APP_NAME.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Fix Games: Visual C++ Runtime
+Comment=Install the Visual C++ 2015-2022 runtime into every Proton prefix
+Exec=$LAUNCHER --all --x86 --notify --pause
+Icon=applications-games
+Terminal=true
+Categories=Game;Utility;
+Keywords=proton;wine;vcredist;visual;runtime;
+EOF
+chmod +x "$DESKTOP_DIR/$APP_NAME.desktop"
+update-desktop-database "$DESKTOP_DIR" 2>/dev/null || true
+
 cat <<EOF
 
 $(say "Installed.")
 
-  See your prefixes ....  $CMD --list
-  Fix one game .........  $CMD --appid <APPID>
-  Fix everything .......  $CMD --all
-  Also 32-bit ..........  add --x86
+  NO KEYBOARD NEEDED. Two ways to run it without typing anything:
 
-  New prefixes are handled automatically at each login.
+    1. Just reboot. It runs automatically at every login.
+    2. Application menu -> "Fix Games: Visual C++ Runtime" (click it).
 
-  Close Steam before running --all: the installer writes into prefixes, and
-  a game running in one at the same time can confuse it.
+  Steam can stay open. Prefixes with a game actually running in them are
+  detected and skipped, then picked up the next time.
+
+  From a terminal, if you have one:
+    See your prefixes ..  $CMD --list
+    Fix one game .......  $CMD --appid <APPID>
+    Fix everything .....  $CMD --all --x86
 
   Uninstall ............  $SOURCE_DIR/uninstall.sh
 EOF

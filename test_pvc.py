@@ -208,5 +208,90 @@ class Overrides(unittest.TestCase):
         self.assertEqual(to_windows_path("/tmp/a.reg"), r"Z:\tmp\a.reg")
 
 
+class BusyPrefix(unittest.TestCase):
+    """Detecting a game running in a prefix is what lets Steam stay open."""
+
+    def test_detects_a_process_running_in_the_prefix(self):
+        import subprocess
+        import time
+
+        from pvc.main import prefix_in_use
+
+        compat = tempfile.mkdtemp()
+        try:
+            env = dict(os.environ)
+            env["STEAM_COMPAT_DATA_PATH"] = compat
+            child = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(30)"], env=env
+            )
+            try:
+                time.sleep(0.6)
+                self.assertTrue(prefix_in_use(compat))
+            finally:
+                child.kill()
+                child.wait()
+            self.assertFalse(prefix_in_use(compat))
+        finally:
+            shutil.rmtree(compat, ignore_errors=True)
+
+    def test_detects_wineprefix_pointing_inside_the_prefix(self):
+        import subprocess
+        import time
+
+        from pvc.main import prefix_in_use
+
+        compat = tempfile.mkdtemp()
+        try:
+            os.makedirs(os.path.join(compat, "pfx"))
+            env = dict(os.environ)
+            # Wine points at compatdata/<id>/pfx, one level below what we scan.
+            env["WINEPREFIX"] = os.path.join(compat, "pfx")
+            child = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(30)"], env=env
+            )
+            try:
+                time.sleep(0.6)
+                self.assertTrue(prefix_in_use(compat))
+            finally:
+                child.kill()
+                child.wait()
+        finally:
+            shutil.rmtree(compat, ignore_errors=True)
+
+    def test_idle_prefix_is_not_busy(self):
+        from pvc.main import prefix_in_use
+
+        compat = tempfile.mkdtemp()
+        try:
+            self.assertFalse(prefix_in_use(compat))
+        finally:
+            shutil.rmtree(compat, ignore_errors=True)
+
+    def test_a_different_prefix_does_not_count_as_busy(self):
+        import subprocess
+        import time
+
+        from pvc.main import prefix_in_use
+
+        busy = tempfile.mkdtemp()
+        idle = tempfile.mkdtemp()
+        try:
+            env = dict(os.environ)
+            env["STEAM_COMPAT_DATA_PATH"] = busy
+            child = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(30)"], env=env
+            )
+            try:
+                time.sleep(0.6)
+                self.assertTrue(prefix_in_use(busy))
+                self.assertFalse(prefix_in_use(idle))
+            finally:
+                child.kill()
+                child.wait()
+        finally:
+            shutil.rmtree(busy, ignore_errors=True)
+            shutil.rmtree(idle, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -53,6 +53,20 @@ def log(message):
     sys.stderr.flush()
 
 
+def notify(title, body, enabled=True):
+    """Desktop notification, so a click-to-run launcher can report back.
+
+    Best effort: this must never be the reason the tool fails.
+    """
+    if not enabled or not shutil.which("notify-send"):
+        return
+    try:
+        subprocess.run(["notify-send", "-a", "proton-vcredist", title, body],
+                       timeout=10, check=False)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 # ------------------------------------------------------------------ download
 def redist_path(arch, quiet=False):
     os.makedirs(CACHE_DIR, exist_ok=True)
@@ -90,6 +104,43 @@ def prefix_has_runtime(compat_dir):
         os.path.isfile(os.path.join(system32, name))
         for name in ("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll")
     )
+
+
+def prefix_in_use(compat_dir):
+    """True if some process is currently running inside this prefix.
+
+    Steam being open is harmless; a *game* running in the prefix we are about
+    to write into is not. Detecting that specifically means the tool never
+    needs you to close Steam — which matters on a handheld, where closing
+    Steam also takes away the on-screen keyboard.
+    """
+    target = os.path.realpath(compat_dir)
+    me = os.getpid()
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return False
+    for entry in entries:
+        if not entry.isdigit() or int(entry) == me:
+            continue
+        try:
+            with open("/proc/%s/environ" % entry, "rb") as handle:
+                blob = handle.read()
+        except OSError:
+            continue  # not ours, or already gone
+        for item in blob.split(b"\0"):
+            if item.startswith(b"STEAM_COMPAT_DATA_PATH=") or item.startswith(
+                b"WINEPREFIX="
+            ):
+                value = item.split(b"=", 1)[1].decode("utf-8", "replace")
+                if not value:
+                    continue
+                try:
+                    if os.path.realpath(value).startswith(target):
+                        return True
+                except OSError:
+                    continue
+    return False
 
 
 def marker_path(compat_dir):
@@ -156,6 +207,10 @@ def to_windows_path(path):
 
 def apply_to_prefix(root, appid, compat_dir, arches, name=None, verbose=True):
     label = "%s (%s)" % (name, appid) if name else appid
+    if prefix_in_use(compat_dir):
+        log("  %s: a game is running in this prefix, skipping it" % label)
+        return None  # neither success nor failure: try again later
+
     proton_dir = steam.proton_for_prefix(root, compat_dir)
     if proton_dir is None:
         log("  %s: no Proton build found, skipping" % label)
@@ -257,6 +312,10 @@ def main(argv=None):
                         help="reapply even if the prefix is already marked done")
     parser.add_argument("--quiet", action="store_true",
                         help="only report failures (used by the login service)")
+    parser.add_argument("--notify", action="store_true",
+                        help="show a desktop notification when finished")
+    parser.add_argument("--pause", action="store_true",
+                        help="wait for a keypress before exiting (click-to-run)")
     args = parser.parse_args(argv)
 
     root = steam.steam_root()
@@ -291,18 +350,41 @@ def main(argv=None):
         return 0
 
     failures = 0
+    skipped = 0
+    done = 0
     for appid, compat_dir in targets:
-        if not apply_to_prefix(root, appid, compat_dir, arches,
-                               name=names.get(appid), verbose=not args.quiet):
+        result = apply_to_prefix(root, appid, compat_dir, arches,
+                                 name=names.get(appid), verbose=not args.quiet)
+        if result is None:
+            skipped += 1
+        elif result:
+            done += 1
+        else:
             failures += 1
 
-    if failures:
-        log("%d of %d prefixes failed." % (failures, len(targets)))
-        return 1
-    if not args.quiet:
-        log("Done: %d prefix(es) updated." % len(targets))
-    return 0
+    summary = "%d updated, %d failed, %d busy" % (done, failures, skipped)
+    if failures or not args.quiet:
+        log("Done: %s." % summary)
+    if skipped and not args.quiet:
+        log("Busy prefixes are retried next time — close those games and rerun.")
+    notify(
+        "Proton VC++ runtime",
+        summary if (failures or skipped) else "%d game(s) fixed." % done,
+        enabled=args.notify,
+    )
+    return 1 if failures else 0
+
+
+def cli():
+    argv = sys.argv[1:]
+    code = main(argv)
+    if "--pause" in argv:
+        try:
+            input("\nFinished. Press Enter to close this window. ")
+        except (EOFError, KeyboardInterrupt):
+            pass
+    return code
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(cli())

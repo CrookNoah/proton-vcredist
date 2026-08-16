@@ -20,10 +20,20 @@ cd proton-vcredist-main
 No root, no reboot. Everything lives under `$HOME`, so SteamOS updates cannot
 remove it.
 
-## Use
+## Use — no keyboard required
 
-**Close Steam first.** The tool writes into prefixes, and a game running in one
-at the same time can confuse it.
+On a handheld the on-screen keyboard belongs to Steam, so a fix that needs you
+to close Steam and type a command is useless exactly when you need it. Two ways
+to run this without typing anything:
+
+1. **Just reboot.** It runs at every login.
+2. **Application menu → "Fix Games: Visual C++ Runtime".** Click it.
+
+**Steam can stay open.** Steam being open is harmless; only a game actually
+running in the prefix being written to is a problem, and those prefixes are
+detected, skipped, and picked up next time.
+
+From a terminal, if you have one:
 
 ```sh
 proton-vcredist --list                # every prefix, and whether it has the runtime
@@ -47,13 +57,12 @@ or use `~/.local/bin/proton-vcredist`.
 
 ## New games are handled for you
 
-A systemd user service runs `--all` once at each login. New prefixes get the
-runtime with no action from you; prefixes already done are skipped by a marker
-file, so it costs nothing.
+A systemd user service runs `--all --x86` once at each login. New prefixes get
+the runtime with no action from you; prefixes already done are skipped by a
+marker file, so it costs nothing.
 
-Login was chosen deliberately over a background timer: at login nothing is
-running, so the tool can never write into a prefix while a game is using it. If
-you add a game mid-session and want it now, just run `--all` yourself.
+If you add a game mid-session and want it now, click the launcher — you do not
+have to wait for the next login, and you do not have to close Steam.
 
 ## What it actually does
 
