@@ -83,6 +83,17 @@ systemctl --user enable "$APP_NAME.service" >/dev/null
 # A clickable launcher, because on a handheld the on-screen keyboard belongs to
 # Steam: if a fix required closing Steam and typing a command, it would be
 # unusable exactly when you need it.
+say "Installing the icon"
+ICON_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps"
+install -d "$ICON_DIR"
+ICON="$ICON_DIR/$APP_NAME.svg"
+if [ -f "$SOURCE_DIR/icons/$APP_NAME.svg" ]; then
+    cp "$SOURCE_DIR/icons/$APP_NAME.svg" "$ICON"
+else
+    ICON="applications-games"
+fi
+gtk-update-icon-cache -q -t -f "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor" 2>/dev/null || true
+
 say "Adding a desktop launcher"
 DESKTOP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 install -d "$DESKTOP_DIR"
@@ -92,7 +103,7 @@ Type=Application
 Name=Fix Games: Visual C++ Runtime
 Comment=Install the Visual C++ 2015-2022 runtime into every Proton prefix
 Exec=$LAUNCHER --all --x86 --notify --pause
-Icon=applications-games
+Icon=$ICON
 Terminal=true
 Categories=Game;Utility;
 Keywords=proton;wine;vcredist;visual;runtime;

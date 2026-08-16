@@ -17,7 +17,7 @@ import sys
 import tempfile
 import urllib.request
 
-from . import steam
+from . import steam, ui
 
 REDIST_URLS = {
     "x64": "https://aka.ms/vs/17/release/vc_redist.x64.exe",
@@ -206,20 +206,21 @@ def to_windows_path(path):
 
 
 def apply_to_prefix(root, appid, compat_dir, arches, name=None, verbose=True):
-    label = "%s (%s)" % (name, appid) if name else appid
+    label = name or appid
+    if verbose:
+        ui.heading(label)
     if prefix_in_use(compat_dir):
-        log("  %s: a game is running in this prefix, skipping it" % label)
-        return None  # neither success nor failure: try again later
+        ui.skip("a game is running in this prefix - will retry later")
+        return None  # neither success nor failure
 
     proton_dir = steam.proton_for_prefix(root, compat_dir)
     if proton_dir is None:
-        log("  %s: no Proton build found, skipping" % label)
+        ui.fail("no Proton build found for this prefix")
         return False
 
     if verbose:
-        log("==> %s" % label)
-        log("    prefix: %s" % compat_dir)
-        log("    proton: %s" % os.path.basename(proton_dir))
+        ui.detail("proton  %s" % os.path.basename(proton_dir))
+        ui.detail("appid   %s" % appid)
 
     ok = True
     for arch in arches:
@@ -233,10 +234,10 @@ def apply_to_prefix(root, appid, compat_dir, arches, name=None, verbose=True):
             ["/install", "/quiet", "/norestart"],
         )
         if code is None:
-            log("    %s installer failed: %s" % (arch, output))
+            ui.fail("%s installer failed: %s" % (arch, output))
             ok = False
         elif verbose:
-            log("    %s installer exited %s" % (arch, code))
+            ui.detail("%s runtime installed" % arch)
 
     # Tell Wine to prefer the freshly installed native DLLs.
     handle = tempfile.NamedTemporaryFile(
@@ -250,7 +251,7 @@ def apply_to_prefix(root, appid, compat_dir, arches, name=None, verbose=True):
             ["/S", to_windows_path(handle.name)], timeout=180,
         )
         if code is None:
-            log("    could not apply DLL overrides: %s" % output)
+            ui.fail("could not apply DLL overrides: %s" % output)
             ok = False
     finally:
         try:
@@ -261,13 +262,13 @@ def apply_to_prefix(root, appid, compat_dir, arches, name=None, verbose=True):
     if prefix_has_runtime(compat_dir):
         write_marker(compat_dir, arches)
         if verbose:
-            log("    ok: runtime present in the prefix")
+            ui.ok("runtime verified in the prefix")
         return True
 
-    log("    FAILED: the runtime DLLs are not in the prefix afterwards")
+    ui.fail("the runtime DLLs are not in the prefix afterwards")
     if verbose and output:
         for line in output.strip().split("\n")[-12:]:
-            log("      %s" % line)
+            ui.detail(line)
     return False
 
 
@@ -276,22 +277,23 @@ def cmd_list(root):
     names = steam.all_names(root)
     steam_ids = set(steam.steam_app_names(root))
     rows = list(steam.iter_prefixes(root))
+    ui.banner("Proton prefixes", "Visual C++ 2015-2022 runtime status")
     if not rows:
-        print("No Proton prefixes found. Launch a game once with Proton first.")
+        ui.note("  No Proton prefixes yet. Launch a game once with Proton first.")
         return 0
-    print("%-12s %-10s %-8s %s" % ("APPID", "KIND", "RUNTIME", "NAME"))
+    table = []
     for appid, compat_dir in rows:
         kind = "steam" if appid in steam_ids else "non-steam"
-        if already_done(compat_dir):
-            status = "done"
-        elif prefix_has_runtime(compat_dir):
-            status = "present"
+        if already_done(compat_dir) or prefix_has_runtime(compat_dir):
+            status = ui.paint(ui.GLYPH["ok"] + " ready", "green")
         else:
-            status = "-"
-        print("%-12s %-10s %-8s %s"
-              % (appid, kind, status, names.get(appid, "?")))
-    print("\nApply to one:   proton-vcredist --appid <APPID>")
-    print("Apply to all:   proton-vcredist --all")
+            status = ui.paint(ui.GLYPH["dot"] + " missing", "yellow")
+        table.append((names.get(appid, "?"), kind, status, appid))
+    ui.table(table, ["game", "kind", "runtime", "appid"])
+    ui.write()
+    ui.note("  Fix one:  proton-vcredist --appid <APPID>")
+    ui.note("  Fix all:  proton-vcredist --all")
+    ui.write()
     return 0
 
 
@@ -326,6 +328,9 @@ def main(argv=None):
     if args.list or not (args.all or args.appid):
         return cmd_list(root)
 
+    if not args.quiet:
+        ui.banner("Fixing games", "Installing the Visual C++ 2015-2022 runtime")
+
     arches = ["x64"] + (["x86"] if args.x86 else [])
     names = steam.all_names(root)
     prefixes = dict(steam.iter_prefixes(root))
@@ -346,7 +351,8 @@ def main(argv=None):
 
     if not targets:
         if not args.quiet:
-            log("Every prefix already has the runtime. Nothing to do.")
+            ui.ok("Every game already has the runtime. Nothing to do.")
+            ui.write()
         return 0
 
     failures = 0
@@ -362,14 +368,15 @@ def main(argv=None):
         else:
             failures += 1
 
-    summary = "%d updated, %d failed, %d busy" % (done, failures, skipped)
-    if failures or not args.quiet:
-        log("Done: %s." % summary)
-    if skipped and not args.quiet:
-        log("Busy prefixes are retried next time — close those games and rerun.")
+    if not args.quiet:
+        ui.summary(done, failures, skipped)
+        if skipped:
+            ui.note("  Busy prefixes are retried automatically next login.")
+            ui.write()
     notify(
         "Proton VC++ runtime",
-        summary if (failures or skipped) else "%d game(s) fixed." % done,
+        "%d fixed, %d failed, %d busy" % (done, failures, skipped)
+        if (failures or skipped) else "%d game(s) fixed." % done,
         enabled=args.notify,
     )
     return 1 if failures else 0
