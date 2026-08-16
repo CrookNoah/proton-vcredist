@@ -32,6 +32,21 @@ Your games as a grid of cover art, **newest first**, so whatever you just added
 is top-left. Tap one and it tells you exactly which DLLs it cannot load, with a
 button to install the Visual C++ runtime for that game.
 
+Each game also gets a **Big Picture readiness** check:
+
+- **Runs through Proton?** A Windows game with no compatibility tool set will
+  not start in Gaming Mode — Steam tries to execute the `.exe` natively and
+  drops you straight back to the library with no error. This is the single
+  most common reason a non-Steam Windows game "does nothing". Pick a Proton
+  build from the dropdown and press **Set Proton** to fix it.
+- **Visual C++ runtime installed?** With a button to install it.
+
+Setting the Proton build edits `config.vdf`, so **Steam must be closed** —
+Steam rewrites that file when it exits and would throw the change away. The
+tool detects a running Steam and refuses rather than silently losing your
+change, backs the file up before writing, and re-parses what it is about to
+write so a serialisation bug cannot land on your only copy.
+
 Artwork comes from Steam's own on-disk cache, which is also where SteamGridDB
 writes custom art for non-Steam shortcuts — so if you set art with Decky or the
 desktop client, it shows up here automatically. No API key and no network
@@ -194,4 +209,13 @@ Everything that decides *where* to act is: VDF in both dialects, Steam's binary
 non-Steam game's prefix directory, and Proton/runtime selection.
 
 - `pvc/steam.py` — finding libraries, prefixes, Proton builds and game names.
+- `pvc/vdf.py` — KeyValues parser/serialiser, so config.vdf is edited safely.
+- `pvc/compat.py` — reading and setting each game's compatibility tool.
+- `pvc/pe.py` — reading a Windows executable's import table.
+- `pvc/diagnose.py` — comparing imports against what the prefix provides.
+- `pvc/gui.py` — the local library view.
 - `pvc/main.py` — downloading, running the installer, overrides, CLI.
+
+There is no "converting" a Windows game to Linux: Proton translates Windows
+calls at runtime and the binary stays a Windows binary. Everything here is
+about making that translation work.

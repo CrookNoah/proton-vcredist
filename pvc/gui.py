@@ -19,7 +19,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from . import art, diagnose, main as pvc_main, steam
+from . import art, compat, diagnose, main as pvc_main, steam
 
 PAGE = """<!doctype html>
 <html><head><meta charset="utf-8">
@@ -65,6 +65,14 @@ PAGE = """<!doctype html>
  td.dll{font-family:ui-monospace,monospace;color:var(--bad);white-space:nowrap}
  .good{color:var(--ok)} .muted{color:var(--dim);font-size:13px}
  .empty{padding:40px 20px;color:var(--dim);text-align:center}
+ .check{display:flex;gap:9px;align-items:flex-start;margin:7px 0;font-size:14px}
+ .mark{width:19px;flex:0 0 19px;text-align:center;font-weight:700}
+ .mark.y{color:var(--ok)} .mark.n{color:var(--bad)}
+ select{font:inherit;padding:10px;border-radius:10px;background:#1f2630;
+        color:var(--text);border:1px solid var(--line);min-height:44px;width:100%}
+ .row{display:flex;gap:9px;align-items:center;margin-top:9px;flex-wrap:wrap}
+ .row>select{flex:1 1 200px;width:auto}
+ hr{border:0;border-top:1px solid var(--line);margin:16px 0}
 </style></head><body>
 <header>
   <h1>Fix Games</h1>
@@ -84,6 +92,7 @@ const T = new URLSearchParams(location.search).get('t');
 const grid = document.getElementById('grid');
 const dlg = document.getElementById('dlg');
 let current = null;
+let lastTools = null;
 
 function api(path, params){
   const q = new URLSearchParams(Object.assign({t:T}, params||{}));
@@ -91,7 +100,8 @@ function api(path, params){
 }
 
 function pill(g){
-  if (g.runtime) return '<span class="pill ok">runtime ready</span>';
+  if (!g.compat_tool) return '<span class="pill warn">no Proton set</span>';
+  if (g.runtime) return '<span class="pill ok">ready</span>';
   return '<span class="pill warn">runtime missing</span>';
 }
 
@@ -116,17 +126,46 @@ function render(games){
 function open(g){
   current = g;
   document.getElementById('dh').textContent = g.name;
-  document.getElementById('db').innerHTML = '<p class="muted">Reading the game\\u2019s imports\\u2026</p>';
+  document.getElementById('db').innerHTML = '<p class="muted">Checking\\u2026</p>';
   document.getElementById('fix').disabled = false;
   document.getElementById('fix').textContent = 'Install VC++ runtime';
   dlg.showModal();
-  api('/diagnose', {appid: g.appid}).then(show);
+  Promise.all([api('/tools'), api('/diagnose', {appid: g.appid})])
+    .then(([tools, diag]) => show(diag, tools));
 }
 
-function show(r){
+function check(good, text){
+  return '<div class="check"><span class="mark ' + (good?'y':'n') + '">' +
+         (good ? '\\u2714' : '\\u2718') + '</span><span>' + text + '</span></div>';
+}
+
+function readiness(g, tools){
+  let h = '<b>Big Picture readiness</b>';
+  h += check(!!g.compat_tool, g.compat_tool
+        ? 'Runs through Proton (<code>' + g.compat_tool + '</code>)'
+        : 'No Proton set \\u2014 Steam will try to run the .exe natively and fail');
+  h += check(g.runtime, g.runtime ? 'Visual C++ runtime installed'
+                                  : 'Visual C++ runtime not installed');
+  if (!g.compat_tool || true){
+    const opts = tools.tools.map(t =>
+      '<option value="' + t.name + '"' +
+      (t.name === g.compat_tool ? ' selected' : '') + '>' + t.label + '</option>').join('');
+    h += '<div class="row"><select id="tool">' +
+         (opts || '<option value="">no Proton builds found</option>') +
+         '</select><button id="setc">Set Proton</button></div>';
+    if (tools.steam_running)
+      h += '<p class="muted">Steam is running. It rewrites this setting when it ' +
+           'exits, so close Steam before changing it.</p>';
+  }
+  return h + '<hr>';
+}
+
+function show(r, tools){
   const db = document.getElementById('db');
-  if (r.error){ db.innerHTML = '<p class="muted">' + r.error + '</p>'; return; }
-  let h = '<p class="muted">' + r.bits + ' \\u00b7 imports ' + r.imports + ' DLL(s)</p>';
+  tools = tools || lastTools; lastTools = tools;
+  let h = tools ? readiness(current, tools) : '';
+  if (r.error){ db.innerHTML = h + '<p class="muted">' + r.error + '</p>'; wire(); return; }
+  h += '<p class="muted">' + r.bits + ' \\u00b7 imports ' + r.imports + ' DLL(s)</p>';
   if (!r.missing.length){
     h += '<p class="good">Every imported DLL resolves in this prefix.</p>' +
          '<p class="muted">If it still fails, the missing module is loaded at ' +
@@ -137,6 +176,27 @@ function show(r){
         m.why + '</td></tr>').join('') + '</table>';
   }
   db.innerHTML = h;
+  wire();
+}
+
+function wire(){
+  const btn = document.getElementById('setc');
+  if (!btn) return;
+  btn.onclick = function(){
+    const tool = document.getElementById('tool').value;
+    if (!tool) return;
+    this.disabled = true; this.textContent = 'Setting\\u2026';
+    api('/setcompat', {appid: current.appid, tool: tool}).then(r => {
+      if (r.ok){
+        current.compat_tool = tool;
+        api('/games').then(render);
+        api('/diagnose', {appid: current.appid}).then(d => show(d, lastTools));
+      } else {
+        this.disabled = false; this.textContent = 'Set Proton';
+        alert(r.message);
+      }
+    });
+  };
 }
 
 document.getElementById('fix').onclick = function(){
@@ -159,6 +219,7 @@ def collect_games(root):
     names = steam.all_names(root)
     exes = steam.non_steam_exes(root)
     steam_ids = set(steam.steam_app_names(root))
+    mapping = compat.read_mapping(root)
     rows = []
     for appid, compat_dir in steam.iter_prefixes(root):
         try:
@@ -170,6 +231,7 @@ def collect_games(root):
             "name": names.get(appid, "Unknown (%s)" % appid),
             "kind": "steam" if appid in steam_ids else "non-steam",
             "runtime": pvc_main.prefix_has_runtime(compat_dir),
+            "compat_tool": mapping.get(appid, ""),
             "compat": compat_dir,
             "exe": exes.get(appid),
             "when": when,
@@ -211,7 +273,8 @@ class _Handler(BaseHTTPRequestHandler):
         elif parsed.path == "/games":
             self._json([
                 {k: (html.escape(v) if k == "name" else v)
-                 for k, v in row.items() if k in ("appid", "name", "kind", "runtime")}
+                 for k, v in row.items()
+                 if k in ("appid", "name", "kind", "runtime", "compat_tool")}
                 for row in collect_games(self.root)
             ])
         elif parsed.path == "/art":
@@ -220,6 +283,17 @@ class _Handler(BaseHTTPRequestHandler):
             self._diagnose(query.get("appid", [""])[0])
         elif parsed.path == "/fix":
             self._fix(query.get("appid", [""])[0])
+        elif parsed.path == "/tools":
+            self._json({
+                "steam_running": compat.steam_running(),
+                "tools": [{"label": label, "name": name}
+                          for label, name in compat.available_tools(self.root)],
+            })
+        elif parsed.path == "/setcompat":
+            ok, message = compat.set_tool(
+                self.root, query.get("appid", [""])[0],
+                query.get("tool", [""])[0])
+            self._json({"ok": ok, "message": message})
         else:
             self._send("not found", "text/plain", 404)
 

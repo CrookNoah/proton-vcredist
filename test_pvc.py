@@ -614,5 +614,179 @@ class Gui(unittest.TestCase):
         self.assertEqual(order[-1], str(-111 & 0xFFFFFFFF), "oldest prefix last")
 
 
+class Vdf(unittest.TestCase):
+    """config.vdf holds the whole Steam client config, so a bad write is a bad
+    day. The parser and serialiser are tested as a pair."""
+
+    SAMPLE = """
+// a comment
+"InstallConfigStore"
+{
+	"Software"
+	{
+		"Valve"
+		{
+			"Steam"
+			{
+				"CompatToolMapping"
+				{
+					"2748302819"
+					{
+						"name"		"proton_experimental"
+						"config"		""
+						"priority"		"250"
+					}
+				}
+			}
+		}
+	}
+}
+"""
+
+    def test_round_trip_preserves_structure(self):
+        from pvc import vdf
+
+        parsed = vdf.loads(self.SAMPLE)
+        again = vdf.loads(vdf.dumps(parsed))
+        self.assertEqual(parsed, again)
+
+    def test_reads_nested_values(self):
+        from pvc import vdf
+
+        parsed = vdf.loads(self.SAMPLE)
+        entry = vdf.get_path(parsed, "InstallConfigStore", "Software", "Valve",
+                             "Steam", "CompatToolMapping", "2748302819")
+        self.assertEqual(entry["name"], "proton_experimental")
+
+    def test_key_lookup_is_case_insensitive(self):
+        # Steam has written both "Valve" and "valve" over the years.
+        from pvc import vdf
+
+        parsed = vdf.loads(self.SAMPLE.replace('"Valve"', '"valve"'))
+        self.assertIsNotNone(vdf.get_path(parsed, "InstallConfigStore",
+                                          "Software", "Valve", "Steam"))
+
+    def test_comments_are_ignored(self):
+        from pvc import vdf
+
+        self.assertNotIn("//", vdf.dumps(vdf.loads(self.SAMPLE)))
+
+    def test_escapes_survive_a_round_trip(self):
+        from pvc import vdf
+
+        text = vdf.dumps(vdf.loads('"a" { "path" "C:\\\\Games\\\\x" }'))
+        self.assertEqual(vdf.loads(text)["a"]["path"], "C:\\Games\\x")
+
+    def test_unbalanced_braces_are_rejected(self):
+        from pvc import vdf
+
+        with self.assertRaises(vdf.VdfError):
+            vdf.loads('"a" { "b" "c"')
+
+    def test_ensure_path_creates_missing_levels(self):
+        from pvc import vdf
+
+        root = vdf.loads('"InstallConfigStore" { }')
+        node = vdf.ensure_path(root, "InstallConfigStore", "Software", "Valve",
+                               "Steam", "CompatToolMapping")
+        node["123"] = {"name": "proton_9"}
+        self.assertEqual(
+            vdf.get_path(vdf.loads(vdf.dumps(root)), "InstallConfigStore",
+                         "Software", "Valve", "Steam", "CompatToolMapping",
+                         "123", "name"),
+            "proton_9")
+
+
+class CompatTool(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.root, True)
+        os.makedirs(os.path.join(self.root, "config"))
+        os.makedirs(os.path.join(self.root, "steamapps", "common"))
+        with open(os.path.join(self.root, "config", "config.vdf"), "w") as handle:
+            handle.write(Vdf.SAMPLE)
+
+    def _proton(self, name, parent="steamapps/common"):
+        directory = os.path.join(self.root, parent, name)
+        os.makedirs(directory, exist_ok=True)
+        open(os.path.join(directory, "proton"), "w").close()
+        return directory
+
+    def test_reads_existing_mapping(self):
+        from pvc import compat
+
+        self.assertEqual(compat.read_mapping(self.root),
+                         {"2748302819": "proton_experimental"})
+
+    def test_official_tool_names(self):
+        from pvc import compat
+
+        self.assertEqual(compat.tool_name_for(self._proton("Proton - Experimental")),
+                         "proton_experimental")
+        self.assertEqual(compat.tool_name_for(self._proton("Proton 9.0")), "proton_9")
+        self.assertEqual(compat.tool_name_for(self._proton("Proton 8.0")), "proton_8")
+
+    def test_community_build_declares_its_own_name(self):
+        from pvc import compat
+
+        directory = self._proton("GE-Proton9-20", parent="compatibilitytools.d")
+        with open(os.path.join(directory, "compatibilitytool.vdf"), "w") as handle:
+            handle.write('"compatibilitytools" { "compat_tools" { '
+                         '"GE-Proton9-20" { "install_path" "." } } }')
+        self.assertEqual(compat.tool_name_for(directory), "GE-Proton9-20")
+
+    def test_available_tools_lists_both_locations(self):
+        from pvc import compat
+
+        self._proton("Proton 9.0")
+        self._proton("GE-Proton9-20", parent="compatibilitytools.d")
+        names = [name for _, name in compat.available_tools(self.root)]
+        self.assertIn("proton_9", names)
+        self.assertIn("GE-Proton9-20", names)
+
+    def test_setting_a_tool_writes_and_backs_up(self):
+        from pvc import compat
+
+        if compat.steam_running():
+            self.skipTest("Steam is running in this environment")
+        ok, message = compat.set_tool(self.root, "999", "proton_9")
+        self.assertTrue(ok, message)
+        self.assertEqual(compat.read_mapping(self.root)["999"], "proton_9")
+        # The original mapping must survive.
+        self.assertEqual(compat.read_mapping(self.root)["2748302819"],
+                         "proton_experimental")
+        backups = [f for f in os.listdir(os.path.join(self.root, "config"))
+                   if "pvc-backup" in f]
+        self.assertEqual(len(backups), 1, "a backup must be written")
+
+    def test_setting_a_tool_twice_updates_in_place(self):
+        from pvc import compat
+
+        if compat.steam_running():
+            self.skipTest("Steam is running in this environment")
+        compat.set_tool(self.root, "999", "proton_8")
+        compat.set_tool(self.root, "999", "proton_9")
+        self.assertEqual(compat.read_mapping(self.root)["999"], "proton_9")
+
+    def test_config_stays_parseable_after_writing(self):
+        from pvc import compat, vdf
+
+        if compat.steam_running():
+            self.skipTest("Steam is running in this environment")
+        compat.set_tool(self.root, "999", "proton_9")
+        with open(compat.config_path(self.root)) as handle:
+            vdf.loads(handle.read())  # must not raise
+
+    def test_missing_config_is_reported_not_crashed(self):
+        from pvc import compat
+
+        os.unlink(compat.config_path(self.root))
+        self.assertEqual(compat.read_mapping(self.root), {})
+        if not compat.steam_running():
+            ok, message = compat.set_tool(self.root, "999", "proton_9")
+            self.assertFalse(ok)
+            self.assertIn("config.vdf", message)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
