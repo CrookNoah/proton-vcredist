@@ -100,6 +100,19 @@ EOF
 chmod +x "$DESKTOP_DIR/$APP_NAME.desktop"
 update-desktop-database "$DESKTOP_DIR" 2>/dev/null || true
 
+# Also drop it straight on the desktop. Digging through a menu on a handheld
+# is exactly the kind of friction this tool exists to remove.
+DESKTOP_HOME="$(xdg-user-dir DESKTOP 2>/dev/null || true)"
+[ -n "$DESKTOP_HOME" ] || DESKTOP_HOME="$HOME/Desktop"
+if [ -d "$DESKTOP_HOME" ]; then
+    cp "$DESKTOP_DIR/$APP_NAME.desktop" "$DESKTOP_HOME/$APP_NAME.desktop"
+    chmod +x "$DESKTOP_HOME/$APP_NAME.desktop"
+    # Plasma will not run a .desktop file it does not consider trusted.
+    kwriteconfig6 --file "$DESKTOP_HOME/$APP_NAME.desktop" \
+        --group "Desktop Entry" --key "X-KDE-AuthorizeAction" "shell_access" 2>/dev/null || true
+    say "Desktop icon: \"Fix Games: Visual C++ Runtime\""
+fi
+
 cat <<EOF
 
 $(say "Installed.")
@@ -107,7 +120,8 @@ $(say "Installed.")
   NO KEYBOARD NEEDED. Two ways to run it without typing anything:
 
     1. Just reboot. It runs automatically at every login.
-    2. Application menu -> "Fix Games: Visual C++ Runtime" (click it).
+    2. Tap the "Fix Games: Visual C++ Runtime" icon on your DESKTOP.
+       (Also in the launcher menu, bottom-left of the taskbar, under Games.)
 
   Steam can stay open. Prefixes with a game actually running in them are
   detected and skipped, then picked up the next time.

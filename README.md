@@ -26,8 +26,16 @@ On a handheld the on-screen keyboard belongs to Steam, so a fix that needs you
 to close Steam and type a command is useless exactly when you need it. Two ways
 to run this without typing anything:
 
-1. **Just reboot.** It runs at every login.
-2. **Application menu → "Fix Games: Visual C++ Runtime".** Click it.
+1. **Just reboot.** It runs at every login, on every prefix.
+2. **Tap the "Fix Games: Visual C++ Runtime" icon on your desktop.**
+
+The installer puts that icon straight on the Desktop Mode desktop. It is also
+in the launcher menu — the button at the bottom-left of the taskbar, the
+Start-menu equivalent — under **Games**, but the desktop icon is quicker.
+
+The first time you tap it, Plasma may ask whether you trust the file; choose to
+continue. It opens a terminal window showing progress and waits for you to
+press Enter before closing, so you can read the result.
 
 **Steam can stay open.** Steam being open is harmless; only a game actually
 running in the prefix being written to is a problem, and those prefixes are

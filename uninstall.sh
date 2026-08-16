@@ -39,6 +39,9 @@ say "Removing files"
 rm -rf "$INSTALL_DIR" "$CACHE"
 rm -f "$LAUNCHER"
 rm -f "${XDG_DATA_HOME:-$HOME/.local/share}/applications/$APP_NAME.desktop"
+DESKTOP_HOME="$(xdg-user-dir DESKTOP 2>/dev/null || true)"
+[ -n "$DESKTOP_HOME" ] || DESKTOP_HOME="$HOME/Desktop"
+rm -f "$DESKTOP_HOME/$APP_NAME.desktop"
 
 if [ -f "$HOME/.bashrc" ] && grep -qF "# added by $APP_NAME" "$HOME/.bashrc" 2>/dev/null; then
     sed -i "/# added by $APP_NAME/,+1d" "$HOME/.bashrc"
