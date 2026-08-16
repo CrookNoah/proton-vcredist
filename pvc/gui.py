@@ -165,14 +165,16 @@ function show(r, tools){
   tools = tools || lastTools; lastTools = tools;
   let h = tools ? readiness(current, tools) : '';
   if (r.error){ db.innerHTML = h + '<p class="muted">' + r.error + '</p>'; wire(); return; }
-  h += '<p class="muted">' + r.bits + ' \\u00b7 imports ' + r.imports + ' DLL(s)</p>';
+  h += '<p class="muted">' + r.bits + ' \\u00b7 followed ' + r.imports +
+       ' module(s) through the dependency chain</p>';
   if (!r.missing.length){
-    h += '<p class="good">Every imported DLL resolves in this prefix.</p>' +
+    h += '<p class="good">Every dependency in the chain resolves in this prefix.</p>' +
          '<p class="muted">If it still fails, the missing module is loaded at ' +
          'runtime rather than imported, so it cannot show up here.</p>';
   } else {
-    h += '<p><b>' + r.missing.length + ' DLL(s) cannot be found:</b></p><table>' +
+    h += '<p><b>' + r.missing.length + ' dependency/ies cannot be found:</b></p><table>' +
       r.missing.map(m => '<tr><td class="dll">' + m.dll + '</td><td class="muted">' +
+        (m.needed_by ? 'needed by ' + m.needed_by + '<br>' : '') +
         m.why + '</td></tr>').join('') + '</table>';
   }
   db.innerHTML = h;
@@ -335,7 +337,7 @@ class _Handler(BaseHTTPRequestHandler):
         proton_dir = steam.proton_for_prefix(self.root, row["compat"])
         try:
             bits = "64-bit" if pe.is_64bit(row["exe"]) else "32-bit"
-            imports, missing = diagnose.diagnose_exe(
+            examined, missing = diagnose.diagnose_exe(
                 row["exe"], row["compat"], proton_dir)
         except pe.NotAPortableExecutable as exc:
             self._json({"error": "Cannot read this executable (%s). Packed or "
@@ -346,11 +348,12 @@ class _Handler(BaseHTTPRequestHandler):
             return
         self._json({
             "bits": bits,
-            "imports": len(imports),
+            "imports": examined,
             "missing": [
                 {"dll": dll,
+                 "needed_by": diagnose.format_chain(chain),
                  "why": diagnose.explain(dll) or "unknown - likely ships with the game"}
-                for dll in missing
+                for dll, chain in missing
             ],
         })
 

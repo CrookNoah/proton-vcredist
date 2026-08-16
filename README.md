@@ -116,26 +116,32 @@ proton-vcredist --diagnose --appid N --exe /path/to/game.exe
 
 ```
 ● My Non-Steam Game
-    exe     /games/MyGame/game.exe
-    64-bit, imports 6 DLL(s)
-    ✘ 4 imported DLL(s) cannot be found:
+    64-bit, followed 3 module(s) through the dependency chain
+    ✘ 2 dependency/ies cannot be found:
 
-MISSING DLL         WHAT IT IS
-vcruntime140_1.dll  Visual C++ runtime - run this tool's fix for that game
-msvcp140.dll        Visual C++ runtime - run this tool's fix for that game
-mfplat.dll          Media Foundation (video playback)
-gameengine64.dll    unknown - likely ships with the game
+MISSING DLL    NEEDED BY                     WHAT IT IS
+msvcp140.dll   engine64.dll → audiocore.dll  Visual C++ runtime - run the fix
+xaudio2_9.dll  engine64.dll → audiocore.dll  DirectX audio
 ```
+
+It follows the **whole dependency chain**, not just the executable's own
+imports. Error 126 is usually raised while loading some DLL the game pulls in,
+and that DLL has imports of its own — so a game whose direct imports all
+resolve can still fail to start. Checking one level deep gives a clean bill of
+health to a game that does not run, which is worse than useless. The **needed
+by** column shows the path that led to each missing file, so you can see
+whether it is the game's own code or something further down.
 
 A DLL counts as available if it sits beside the .exe, in the prefix's
 `system32`/`syswow64`, or among the Wine builtins the prefix's own Proton
-build ships. Delay-loaded imports are included, since those fail later but
-just as hard.
+build ships. Delay-loaded imports are included, since those fail later but just
+as hard. `api-ms-win-*` contracts are skipped: they are virtual and resolved by
+the loader, never files on disk, so reporting them would bury the real answer.
 
 Two limits worth knowing. Modules loaded at runtime with `LoadLibrary` are not
-in the import table and cannot appear here. And packed or protected
-executables hide their imports entirely — the tool says so rather than
-pretending the list is empty.
+in any import table and cannot appear here. And packed or protected executables
+hide their imports entirely — the tool says so rather than pretending the list
+is empty.
 
 ## New games are handled for you
 

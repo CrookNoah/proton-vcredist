@@ -453,7 +453,52 @@ class Diagnosis(unittest.TestCase):
         exe = self._exe(["KERNEL32.dll", "VCRUNTIME140_1.dll"])
         open(os.path.join(self.system32, "kernel32.dll"), "w").close()
         _, missing = diagnose.diagnose_exe(exe, self.compat, None)
-        self.assertEqual(missing, ["vcruntime140_1.dll"])
+        self.assertEqual([dll for dll, _ in missing], ["vcruntime140_1.dll"])
+
+    def test_transitive_dependency_is_found(self):
+        # The real cause of error 126 is usually a DLL the game loads whose
+        # own imports are missing. Looking one level deep declares this
+        # perfectly healthy.
+        from pvc import diagnose
+
+        exe = self._exe(["ENGINE.dll"])
+        with open(os.path.join(self.game, "engine.dll"), "wb") as handle:
+            handle.write(build_pe(["MSVCP140.dll"]))
+        _, missing = diagnose.diagnose_exe(exe, self.compat, None)
+        self.assertEqual([dll for dll, _ in missing], ["msvcp140.dll"])
+
+    def test_the_chain_to_a_missing_dll_is_reported(self):
+        from pvc import diagnose
+
+        exe = self._exe(["ENGINE.dll"])
+        with open(os.path.join(self.game, "engine.dll"), "wb") as handle:
+            handle.write(build_pe(["AUDIO.dll"]))
+        with open(os.path.join(self.game, "audio.dll"), "wb") as handle:
+            handle.write(build_pe(["MSVCP140.dll"]))
+        _, missing = diagnose.diagnose_exe(exe, self.compat, None)
+        dll, chain = missing[0]
+        self.assertEqual(dll, "msvcp140.dll")
+        self.assertEqual(diagnose.format_chain(chain), "engine.dll → audio.dll")
+
+    def test_api_set_contracts_are_not_reported_missing(self):
+        # These are virtual contracts resolved by the loader, never files.
+        from pvc import diagnose
+
+        exe = self._exe(["api-ms-win-crt-runtime-l1-1-0.dll", "KERNEL32.dll"])
+        open(os.path.join(self.system32, "kernel32.dll"), "w").close()
+        _, missing = diagnose.diagnose_exe(exe, self.compat, None)
+        self.assertEqual(missing, [])
+
+    def test_dependency_cycles_terminate(self):
+        from pvc import diagnose
+
+        exe = self._exe(["A.dll"])
+        with open(os.path.join(self.game, "a.dll"), "wb") as handle:
+            handle.write(build_pe(["B.dll"]))
+        with open(os.path.join(self.game, "b.dll"), "wb") as handle:
+            handle.write(build_pe(["A.dll", "GONE.dll"]))
+        _, missing = diagnose.diagnose_exe(exe, self.compat, None)
+        self.assertEqual([dll for dll, _ in missing], ["gone.dll"])
 
     def test_dll_beside_the_exe_counts_as_found(self):
         from pvc import diagnose

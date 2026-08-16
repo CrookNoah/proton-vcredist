@@ -3,6 +3,12 @@
 The executable lists what it needs; the prefix, the game folder and Proton's
 own builtin DLLs are where those needs can be met. Comparing the two turns
 "error 126" into a specific list of filenames.
+
+The comparison follows the whole dependency chain, not just the executable's
+own imports. Error 126 is usually raised while loading some DLL the game pulls
+in, and that DLL has imports of its own -- so a game whose direct imports all
+resolve can still fail, and looking only one level deep reports a clean bill of
+health for a game that does not start.
 """
 
 import os
@@ -16,7 +22,6 @@ VCREDIST_DLLS = {
     "vccorlib140.dll", "vcomp140.dll", "vcruntime140.dll", "vcruntime140_1.dll",
 }
 
-# Things Wine implements but that some builds omit, with a human explanation.
 KNOWN_EXTRAS = {
     "xinput1_3.dll": "DirectX controller runtime",
     "xinput1_4.dll": "DirectX controller runtime",
@@ -29,35 +34,95 @@ KNOWN_EXTRAS = {
     "physxloader.dll": "PhysX runtime, ships with the game",
     "steam_api.dll": "Steam API, ships with the game",
     "steam_api64.dll": "Steam API, ships with the game",
+    "steamclient.dll": "Steam client library",
+    "steamclient64.dll": "Steam client library",
 }
 
+# Virtual API-set contracts. Windows resolves these to real modules at load
+# time and Wine implements them internally, so they are never files on disk.
+# Reporting them as missing would bury the real answer in noise.
+VIRTUAL_PREFIXES = ("api-ms-win-", "ext-ms-win-", "api-ms-onecore")
 
-def _index(directory, into):
+MAX_DEPTH = 6
+MAX_MODULES = 400
+
+
+def _index_dir(directory, into):
     try:
         for entry in os.listdir(directory):
-            into.add(entry.lower())
+            into.setdefault(entry.lower(), os.path.join(directory, entry))
     except OSError:
         pass
 
 
-def available_dlls(compat_dir, proton_dir, exe_dir):
-    """Every DLL name resolvable for a program in this prefix."""
-    names = set()
+def dll_index(compat_dir, proton_dir, exe_dir):
+    """name -> path for every DLL a program in this prefix could load.
+
+    Ordered by Windows' own search order as far as it matters here: the
+    executable's own folder wins over the system directories.
+    """
+    index = {}
     if exe_dir:
-        _index(exe_dir, names)
+        _index_dir(exe_dir, index)
     prefix = os.path.join(compat_dir, "pfx", "drive_c", "windows")
-    _index(os.path.join(prefix, "system32"), names)
-    _index(os.path.join(prefix, "syswow64"), names)
+    _index_dir(os.path.join(prefix, "system32"), index)
+    _index_dir(os.path.join(prefix, "syswow64"), index)
     if proton_dir:
         # Proton ships Wine's builtins as real PE files under its dist tree.
         for root in ("files", "dist"):
-            base = os.path.join(proton_dir, root, "lib64", "wine")
-            for flavour in ("x86_64-windows", "i386-windows"):
-                _index(os.path.join(base, flavour), names)
-            base = os.path.join(proton_dir, root, "lib", "wine")
-            for flavour in ("x86_64-windows", "i386-windows"):
-                _index(os.path.join(base, flavour), names)
-    return names
+            for lib in ("lib64", "lib"):
+                for flavour in ("x86_64-windows", "i386-windows"):
+                    _index_dir(os.path.join(proton_dir, root, lib, "wine", flavour),
+                               index)
+    return index
+
+
+def is_virtual(name):
+    return name.startswith(VIRTUAL_PREFIXES)
+
+
+def walk_imports(exe_path, index):
+    """Follow the dependency graph from an executable.
+
+    Returns (modules_examined, missing) where each missing entry is
+    (dll name, chain of module names that led to it).
+    """
+    root = os.path.basename(exe_path)
+    queue = [(exe_path, root, [root], 0)]
+    visited = {root.lower()}
+    missing = []
+    reported = set()
+    examined = 0
+
+    while queue and examined < MAX_MODULES:
+        path, _name, chain, depth = queue.pop(0)
+        try:
+            imports = pe.imported_dlls(path)
+        except (pe.NotAPortableExecutable, OSError):
+            continue  # a data file or an unreadable module ends this branch
+        examined += 1
+
+        for dll in imports:
+            if is_virtual(dll):
+                continue
+            resolved = index.get(dll)
+            if resolved is None:
+                if dll not in reported:
+                    reported.add(dll)
+                    missing.append((dll, chain))
+                continue
+            if dll in visited or depth + 1 > MAX_DEPTH:
+                continue
+            visited.add(dll)
+            queue.append((resolved, dll, chain + [dll], depth + 1))
+
+    return examined, missing
+
+
+def diagnose_exe(exe_path, compat_dir, proton_dir):
+    """Return (modules examined, missing) following the whole chain."""
+    index = dll_index(compat_dir, proton_dir, os.path.dirname(exe_path))
+    return walk_imports(exe_path, index)
 
 
 def explain(name):
@@ -66,12 +131,9 @@ def explain(name):
     return KNOWN_EXTRAS.get(name, "")
 
 
-def diagnose_exe(exe_path, compat_dir, proton_dir):
-    """Return (imports, missing) for one executable."""
-    imports = pe.imported_dlls(exe_path)
-    have = available_dlls(compat_dir, proton_dir, os.path.dirname(exe_path))
-    missing = [name for name in imports if name not in have]
-    return imports, missing
+def format_chain(chain):
+    """'game.exe -> foo.dll', or '' when the exe imported it directly."""
+    return " → ".join(chain[1:]) if len(chain) > 1 else ""
 
 
 def report(root, appid, compat_dir, exe_path, name=None):
@@ -94,7 +156,7 @@ def report(root, appid, compat_dir, exe_path, name=None):
 
     try:
         bits = "64-bit" if pe.is_64bit(exe_path) else "32-bit"
-        imports, missing = diagnose_exe(exe_path, compat_dir, proton_dir)
+        examined, missing = diagnose_exe(exe_path, compat_dir, proton_dir)
     except pe.NotAPortableExecutable as exc:
         ui.fail("cannot read the executable: %s" % exc)
         ui.detail("Packed or protected executables hide their imports. "
@@ -104,27 +166,32 @@ def report(root, appid, compat_dir, exe_path, name=None):
         ui.fail("cannot read the executable: %s" % exc)
         return False
 
-    ui.detail("%s, imports %d DLL(s)" % (bits, len(imports)))
+    ui.detail("%s, followed %d module(s) through the dependency chain" % (bits, examined))
 
     if not missing:
-        ui.ok("every imported DLL resolves in this prefix")
+        ui.ok("every dependency in the chain resolves in this prefix")
         ui.detail("If it still fails, the missing module is loaded at runtime "
                   "rather than imported, and will not appear here.")
         return True
 
-    ui.fail("%d imported DLL(s) cannot be found:" % len(missing))
+    ui.fail("%d dependency/ies cannot be found:" % len(missing))
     rows = []
-    for dll in missing:
-        rows.append((dll, explain(dll) or "unknown - likely ships with the game"))
+    for dll, chain in missing:
+        rows.append((
+            dll,
+            format_chain(chain) or "(imported directly)",
+            explain(dll) or "unknown - likely ships with the game",
+        ))
     ui.write()
-    ui.table(rows, ["missing dll", "what it is"])
+    ui.table(rows, ["missing dll", "needed by", "what it is"])
     ui.write()
 
-    if any(dll in VCREDIST_DLLS for dll in missing):
+    names = {dll for dll, _ in missing}
+    if names & VCREDIST_DLLS:
         ui.note("  Some of these are the Visual C++ runtime. Fix with:")
         ui.note("    proton-vcredist --appid %s" % appid)
         ui.write()
-    if any(dll not in VCREDIST_DLLS for dll in missing):
+    if names - VCREDIST_DLLS:
         ui.note("  DLLs that normally ship beside the game usually mean the")
         ui.note("  install is incomplete or the .exe was moved away from them.")
         ui.write()
