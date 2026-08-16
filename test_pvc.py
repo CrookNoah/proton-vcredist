@@ -10,6 +10,7 @@ game's prefix is in.
 Run with:  python3 test_pvc.py
 """
 
+import json
 import os
 import shutil
 import struct
@@ -496,6 +497,121 @@ class ShortcutExes(unittest.TestCase):
             handle.write(blob)
         exes = steam.non_steam_exes(root)
         self.assertEqual(exes[str(-5 & 0xFFFFFFFF)], "/games/My Game/game.exe")
+
+
+class Gui(unittest.TestCase):
+    """The GUI is the primary interface now, so its endpoints are tested."""
+
+    def setUp(self):
+        import threading
+        from http.server import ThreadingHTTPServer
+
+        from pvc import gui
+
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.root, True)
+        steamapps = os.path.join(self.root, "steamapps")
+        os.makedirs(os.path.join(steamapps, "common"))
+
+        self.appid = str(-222 & 0xFFFFFFFF)
+        compat = os.path.join(steamapps, "compatdata", self.appid)
+        system32 = os.path.join(compat, "pfx/drive_c/windows/system32")
+        os.makedirs(system32)
+        open(os.path.join(system32, "kernel32.dll"), "w").close()
+
+        folder = os.path.join(self.root, "g")
+        os.makedirs(folder)
+        self.exe = os.path.join(folder, "game.exe")
+        with open(self.exe, "wb") as handle:
+            handle.write(build_pe(["KERNEL32.dll", "VCRUNTIME140_1.dll"]))
+
+        config = os.path.join(self.root, "userdata", "1", "config")
+        os.makedirs(config)
+        with open(os.path.join(config, "shortcuts.vdf"), "wb") as handle:
+            handle.write(bvdf_map("shortcuts", bvdf_map("0",
+                bvdf_int("appid", -222) + bvdf_string("AppName", "Test Game")
+                + bvdf_string("Exe", '"%s"' % self.exe))))
+
+        gui._Handler.root = self.root
+        gui._Handler.token = "TESTTOKEN"
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), gui._Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.addCleanup(self.server.shutdown)
+        self.base = "http://127.0.0.1:%d" % self.server.server_address[1]
+
+    def _get(self, path, **params):
+        import urllib.request
+        from urllib.parse import urlencode
+
+        params.setdefault("t", "TESTTOKEN")
+        with urllib.request.urlopen(self.base + path + "?" + urlencode(params)) as r:
+            return r.status, r.headers.get("Content-Type"), r.read()
+
+    def test_page_is_served(self):
+        status, ctype, body = self._get("/")
+        self.assertEqual(status, 200)
+        self.assertIn("text/html", ctype)
+        self.assertIn(b"Fix Games", body)
+
+    def test_games_endpoint(self):
+        _, _, body = self._get("/games")
+        games = json.loads(body)
+        self.assertEqual(games[0]["name"], "Test Game")
+        self.assertEqual(games[0]["kind"], "non-steam")
+        self.assertFalse(games[0]["runtime"])
+
+    def test_diagnose_endpoint_reports_missing_dlls(self):
+        _, _, body = self._get("/diagnose", appid=self.appid)
+        result = json.loads(body)
+        self.assertEqual(result["bits"], "64-bit")
+        self.assertEqual([m["dll"] for m in result["missing"]], ["vcruntime140_1.dll"])
+        self.assertIn("Visual C++", result["missing"][0]["why"])
+
+    def test_art_falls_back_to_a_placeholder(self):
+        _, ctype, body = self._get("/art", appid=self.appid)
+        self.assertEqual(ctype, "image/svg+xml")
+        self.assertIn(b"<svg", body)
+
+    def test_real_artwork_is_preferred_over_the_placeholder(self):
+        from pvc import art
+
+        grid = os.path.join(self.root, "userdata", "1", "config", "grid")
+        os.makedirs(grid)
+        cover = os.path.join(grid, "%sp.png" % self.appid)
+        with open(cover, "wb") as handle:
+            handle.write(b"\x89PNG\r\n\x1a\n" + b"\0" * 32)
+        self.assertEqual(art.find_art(self.root, self.appid), cover)
+
+    def test_a_wrong_token_is_refused(self):
+        import urllib.error
+        import urllib.request
+
+        for url in (self.base + "/games?t=WRONG", self.base + "/games"):
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(url)
+            self.assertEqual(caught.exception.code, 403)
+
+    def test_games_are_newest_first(self):
+        import time
+
+        from pvc import gui
+
+        steamapps = os.path.join(self.root, "steamapps")
+        for offset, signed in ((5000, -111), (1, -333)):
+            appid = str(signed & 0xFFFFFFFF)
+            compat = os.path.join(steamapps, "compatdata", appid)
+            os.makedirs(os.path.join(compat, "pfx"))
+            stamp = time.time() - offset
+            os.utime(compat, (stamp, stamp))
+        # The prefix built in setUp has an mtime of "now", which would
+        # legitimately sort first; age it so the ordering under test is the
+        # one this case is actually about.
+        middle = time.time() - 2500
+        os.utime(os.path.join(steamapps, "compatdata", self.appid),
+                 (middle, middle))
+        order = [row["appid"] for row in gui.collect_games(self.root)]
+        self.assertEqual(order[0], str(-333 & 0xFFFFFFFF), "newest prefix first")
+        self.assertEqual(order[-1], str(-111 & 0xFFFFFFFF), "oldest prefix last")
 
 
 if __name__ == "__main__":

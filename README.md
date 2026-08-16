@@ -20,6 +20,28 @@ cd proton-vcredist-main
 No root, no reboot. Everything lives under `$HOME`, so SteamOS updates cannot
 remove it.
 
+## The library view
+
+```sh
+proton-vcredist --gui
+```
+
+Or just tap the **Fix Games** icon on your desktop — that is what it opens now.
+
+Your games as a grid of cover art, **newest first**, so whatever you just added
+is top-left. Tap one and it tells you exactly which DLLs it cannot load, with a
+button to install the Visual C++ runtime for that game.
+
+Artwork comes from Steam's own on-disk cache, which is also where SteamGridDB
+writes custom art for non-Steam shortcuts — so if you set art with Decky or the
+desktop client, it shows up here automatically. No API key and no network
+involved. Games with no art get a coloured tile with their initials.
+
+It is a local web page rather than a desktop app because no GUI toolkit ships
+reliably on SteamOS, while a browser always does. The server binds to loopback
+only and requires a token generated at startup, so nothing else on the machine
+can drive it. Close the terminal or press Ctrl-C to stop it.
+
 ## Use — no keyboard required
 
 On a handheld the on-screen keyboard belongs to Steam, so a fix that needs you
@@ -27,7 +49,7 @@ to close Steam and type a command is useless exactly when you need it. Two ways
 to run this without typing anything:
 
 1. **Just reboot.** It runs at every login, on every prefix.
-2. **Tap the "Fix Games: Visual C++ Runtime" icon on your desktop.**
+2. **Tap the "Fix Games" icon on your desktop** to open the library view.
 
 The installer puts that icon straight on the Desktop Mode desktop. It is also
 in the launcher menu — the button at the bottom-left of the taskbar, the

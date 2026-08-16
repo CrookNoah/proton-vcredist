@@ -100,11 +100,11 @@ install -d "$DESKTOP_DIR"
 cat > "$DESKTOP_DIR/$APP_NAME.desktop" <<EOF
 [Desktop Entry]
 Type=Application
-Name=Fix Games: Visual C++ Runtime
-Comment=Install the Visual C++ 2015-2022 runtime into every Proton prefix
-Exec=$LAUNCHER --all --x86 --notify --pause
+Name=Fix Games
+Comment=See your games, find missing DLLs, install the Visual C++ runtime
+Exec=$LAUNCHER --gui
 Icon=$ICON
-Terminal=true
+Terminal=false
 Categories=Game;Utility;
 Keywords=proton;wine;vcredist;visual;runtime;
 EOF
@@ -121,7 +121,7 @@ if [ -d "$DESKTOP_HOME" ]; then
     # Plasma will not run a .desktop file it does not consider trusted.
     kwriteconfig6 --file "$DESKTOP_HOME/$APP_NAME.desktop" \
         --group "Desktop Entry" --key "X-KDE-AuthorizeAction" "shell_access" 2>/dev/null || true
-    say "Desktop icon: \"Fix Games: Visual C++ Runtime\""
+    say "Desktop icon: \"Fix Games\""
 fi
 
 cat <<EOF
@@ -131,14 +131,17 @@ $(say "Installed.")
   NO KEYBOARD NEEDED. Two ways to run it without typing anything:
 
     1. Just reboot. It runs automatically at every login.
-    2. Tap the "Fix Games: Visual C++ Runtime" icon on your DESKTOP.
-       (Also in the launcher menu, bottom-left of the taskbar, under Games.)
+    2. Tap the "Fix Games" icon on your DESKTOP. It opens a library view
+       in your browser: every game with its cover art, newest first.
+       Tap a game to see exactly which DLLs it cannot load.
 
   Steam can stay open. Prefixes with a game actually running in them are
   detected and skipped, then picked up the next time.
 
   From a terminal, if you have one:
+    Library view .......  $CMD --gui
     See your prefixes ..  $CMD --list
+    Why won't it start?   $CMD --diagnose
     Fix one game .......  $CMD --appid <APPID>
     Fix everything .....  $CMD --all --x86
 

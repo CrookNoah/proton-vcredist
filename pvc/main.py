@@ -351,6 +351,8 @@ def main(argv=None):
                         help="show a desktop notification when finished")
     parser.add_argument("--pause", action="store_true",
                         help="wait for a keypress before exiting (click-to-run)")
+    parser.add_argument("--gui", action="store_true",
+                        help="open the library view in a browser (touch friendly)")
     parser.add_argument("--diagnose", action="store_true",
                         help="find which DLLs a game needs but cannot load "
                              "(the cause of error 126)")
@@ -361,6 +363,11 @@ def main(argv=None):
     if root is None:
         log("Steam installation not found.")
         return 1
+
+    if args.gui:
+        from . import gui
+
+        return gui.serve(root)
 
     if args.diagnose:
         return cmd_diagnose(root, args)
