@@ -273,6 +273,39 @@ def apply_to_prefix(root, appid, compat_dir, arches, name=None, verbose=True):
 
 
 # ----------------------------------------------------------------------- CLI
+def cmd_diagnose(root, args):
+    """Explain a missing-module failure by reading the game's import table."""
+    from . import diagnose
+
+    ui.banner("Why won't it start?", "Checking which DLLs the game cannot load")
+    names = steam.all_names(root)
+    exes = steam.non_steam_exes(root)
+    prefixes = dict(steam.iter_prefixes(root))
+
+    targets = args.appid or sorted(prefixes)
+    if not args.appid and not args.exe:
+        # Diagnosing every prefix is noise; non-Steam games are the ones that
+        # record an exe and the ones that hit this.
+        targets = [appid for appid in targets if appid in exes]
+        if not targets:
+            ui.note("  No non-Steam shortcuts found to diagnose.")
+            ui.note("  Use --appid <APPID> --exe /path/to/game.exe")
+            ui.write()
+            return 1
+
+    problems = 0
+    for appid in targets:
+        compat_dir = prefixes.get(appid)
+        if compat_dir is None:
+            ui.fail("no prefix for appid %s" % appid)
+            problems += 1
+            continue
+        exe = args.exe or exes.get(appid)
+        if not diagnose.report(root, appid, compat_dir, exe, names.get(appid)):
+            problems += 1
+    return 1 if problems else 0
+
+
 def cmd_list(root):
     names = steam.all_names(root)
     steam_ids = set(steam.steam_app_names(root))
@@ -318,12 +351,19 @@ def main(argv=None):
                         help="show a desktop notification when finished")
     parser.add_argument("--pause", action="store_true",
                         help="wait for a keypress before exiting (click-to-run)")
+    parser.add_argument("--diagnose", action="store_true",
+                        help="find which DLLs a game needs but cannot load "
+                             "(the cause of error 126)")
+    parser.add_argument("--exe", help="executable to diagnose, if not recorded")
     args = parser.parse_args(argv)
 
     root = steam.steam_root()
     if root is None:
         log("Steam installation not found.")
         return 1
+
+    if args.diagnose:
+        return cmd_diagnose(root, args)
 
     if args.list or not (args.all or args.appid):
         return cmd_list(root)

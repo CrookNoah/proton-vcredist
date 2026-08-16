@@ -197,6 +197,44 @@ def all_names(root):
     return names
 
 
+def non_steam_exes(root):
+    """appid -> executable path, for non-Steam shortcuts.
+
+    Steam quotes the path and may append launch arguments; both have to come
+    off before the result is a filename anything can open.
+    """
+    exes = {}
+    userdata = os.path.join(root, "userdata")
+    if not os.path.isdir(userdata):
+        return exes
+    try:
+        users = os.listdir(userdata)
+    except OSError:
+        return exes
+    for user in users:
+        path = os.path.join(userdata, user, "config", "shortcuts.vdf")
+        try:
+            with open(path, "rb") as handle:
+                blob = handle.read()
+        except OSError:
+            continue
+        try:
+            entries = parse_shortcuts(blob)
+        except Exception:
+            continue
+        for entry in entries:
+            appid = shortcut_appid(entry)
+            exe = entry.get("exe") or entry.get("executable")
+            if not (appid and exe):
+                continue
+            exe = str(exe).strip()
+            if exe.startswith('"'):
+                closing = exe.find('"', 1)
+                exe = exe[1:closing] if closing > 0 else exe[1:]
+            exes[appid] = exe
+    return exes
+
+
 # -------------------------------------------------------------------- proton
 def proton_builds(root):
     """name -> directory for every Proton build Steam has installed."""

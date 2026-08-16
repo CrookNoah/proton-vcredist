@@ -63,6 +63,43 @@ If the command isn't found, open a new terminal (the installer adds
 `~/.local/bin` to your PATH, which only applies to terminals opened afterwards)
 or use `~/.local/bin/proton-vcredist`.
 
+## Why won't this game start? (error 126)
+
+`Error 126` is Windows' `ERROR_MOD_NOT_FOUND`: a dependency could not be
+loaded. Neither Windows nor Wine says *which* one, so the usual experience is
+guessing. The executable itself knows — its import table lists every DLL it
+expects — so this reads it and compares against what the prefix can actually
+provide:
+
+```sh
+proton-vcredist --diagnose                        # every non-Steam game
+proton-vcredist --diagnose --appid 2748302819     # one game
+proton-vcredist --diagnose --appid N --exe /path/to/game.exe
+```
+
+```
+● My Non-Steam Game
+    exe     /games/MyGame/game.exe
+    64-bit, imports 6 DLL(s)
+    ✘ 4 imported DLL(s) cannot be found:
+
+MISSING DLL         WHAT IT IS
+vcruntime140_1.dll  Visual C++ runtime - run this tool's fix for that game
+msvcp140.dll        Visual C++ runtime - run this tool's fix for that game
+mfplat.dll          Media Foundation (video playback)
+gameengine64.dll    unknown - likely ships with the game
+```
+
+A DLL counts as available if it sits beside the .exe, in the prefix's
+`system32`/`syswow64`, or among the Wine builtins the prefix's own Proton
+build ships. Delay-loaded imports are included, since those fail later but
+just as hard.
+
+Two limits worth knowing. Modules loaded at runtime with `LoadLibrary` are not
+in the import table and cannot appear here. And packed or protected
+executables hide their imports entirely — the tool says so rather than
+pretending the list is empty.
+
 ## New games are handled for you
 
 A systemd user service runs `--all --x86` once at each login. New prefixes get

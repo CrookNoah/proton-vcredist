@@ -293,5 +293,210 @@ class BusyPrefix(unittest.TestCase):
             shutil.rmtree(idle, ignore_errors=True)
 
 
+
+# ---------------------------------------------------------------- PE parsing
+def build_pe(imports=(), delay_imports=(), plus=True):
+    """Construct a minimal but genuinely valid PE image with an import table.
+
+    Hand-building the file is the only way to test the parser without shipping
+    a Windows binary, and it pins down the exact offsets the parser relies on.
+    """
+    import struct as st
+
+    section_rva = 0x1000
+    section_raw = 0x400
+
+    # Lay out the import data inside the section, addressing it by RVA.
+    blob = bytearray()
+
+    def place(data):
+        offset = len(blob)
+        blob.extend(data)
+        return section_rva + offset
+
+    name_rvas = [place(n.encode() + b"\0") for n in imports]
+    delay_rvas = [place(n.encode() + b"\0") for n in delay_imports]
+    while len(blob) % 4:
+        blob.append(0)
+
+    import_dir_rva = section_rva + len(blob)
+    for rva in name_rvas:
+        blob.extend(st.pack("<IIIII", 0, 0, 0, rva, 0))
+    blob.extend(b"\0" * 20)  # terminator
+
+    while len(blob) % 4:
+        blob.append(0)
+    delay_dir_rva = section_rva + len(blob) if delay_imports else 0
+    for rva in delay_rvas:
+        blob.extend(st.pack("<II", 0, rva) + b"\0" * 24)
+    if delay_imports:
+        blob.extend(b"\0" * 32)
+
+    section_data = bytes(blob)
+
+    magic = 0x20B if plus else 0x10B
+    machine = 0x8664 if plus else 0x14C
+    dir_offset = 112 if plus else 96
+    optional_size = dir_offset + 16 * 8
+
+    optional = bytearray(optional_size)
+    st.pack_into("<H", optional, 0, magic)
+    st.pack_into("<II", optional, dir_offset + 1 * 8, import_dir_rva, 20)
+    if delay_dir_rva:
+        st.pack_into("<II", optional, dir_offset + 13 * 8, delay_dir_rva, 32)
+
+    coff = st.pack("<HHIIIHH", machine, 1, 0, 0, 0, optional_size, 0x0022)
+    section = (b".text\0\0\0"
+               + st.pack("<IIII", len(section_data), section_rva,
+                         len(section_data), section_raw)
+               + b"\0" * 16)
+
+    pe_offset = 0x80
+    image = bytearray(b"\0" * section_raw)
+    image[0:2] = b"MZ"
+    st.pack_into("<I", image, 0x3C, pe_offset)
+    image[pe_offset:pe_offset + 4] = b"PE\0\0"
+    image[pe_offset + 4:pe_offset + 4 + len(coff)] = coff
+    start = pe_offset + 4 + len(coff)
+    image[start:start + optional_size] = optional
+    start += optional_size
+    image[start:start + len(section)] = section
+    image.extend(section_data)
+    return bytes(image)
+
+
+class PortableExecutable(unittest.TestCase):
+    def _write(self, blob):
+        handle = tempfile.NamedTemporaryFile(suffix=".exe", delete=False)
+        handle.write(blob)
+        handle.close()
+        self.addCleanup(os.unlink, handle.name)
+        return handle.name
+
+    def test_reads_imported_dlls(self):
+        from pvc import pe
+
+        path = self._write(build_pe(["KERNEL32.dll", "VCRUNTIME140_1.dll"]))
+        self.assertEqual(pe.imported_dlls(path),
+                         ["kernel32.dll", "vcruntime140_1.dll"])
+
+    def test_reads_delay_loaded_dlls_too(self):
+        # A delay-loaded dependency fails later, but just as hard.
+        from pvc import pe
+
+        path = self._write(build_pe(["KERNEL32.dll"], ["XINPUT1_3.dll"]))
+        self.assertEqual(pe.imported_dlls(path), ["kernel32.dll", "xinput1_3.dll"])
+
+    def test_deduplicates_case_insensitively(self):
+        from pvc import pe
+
+        path = self._write(build_pe(["USER32.dll", "user32.dll"]))
+        self.assertEqual(pe.imported_dlls(path), ["user32.dll"])
+
+    def test_detects_architecture(self):
+        from pvc import pe
+
+        self.assertTrue(pe.is_64bit(self._write(build_pe(["a.dll"], plus=True))))
+        self.assertFalse(pe.is_64bit(self._write(build_pe(["a.dll"], plus=False))))
+
+    def test_32bit_images_parse(self):
+        from pvc import pe
+
+        path = self._write(build_pe(["MSVCP140.dll"], plus=False))
+        self.assertEqual(pe.imported_dlls(path), ["msvcp140.dll"])
+
+    def test_non_pe_file_is_rejected_cleanly(self):
+        from pvc import pe
+
+        path = self._write(b"this is not an executable at all")
+        with self.assertRaises(pe.NotAPortableExecutable):
+            pe.imported_dlls(path)
+
+    def test_truncation_never_raises_something_unexpected(self):
+        from pvc import pe
+
+        blob = build_pe(["KERNEL32.dll", "USER32.dll"])
+        for cut in range(0, len(blob), 7):
+            try:
+                pe.imported_dlls(self._write(blob[:cut]))
+            except pe.NotAPortableExecutable:
+                pass  # the documented failure mode
+            except Exception as exc:
+                self.fail("cut at %d raised %r" % (cut, exc))
+
+    def test_image_with_no_imports(self):
+        from pvc import pe
+
+        self.assertEqual(pe.imported_dlls(self._write(build_pe())), [])
+
+
+class Diagnosis(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.compat = os.path.join(self.root, "compatdata", "1")
+        self.system32 = os.path.join(self.compat, "pfx/drive_c/windows/system32")
+        os.makedirs(self.system32)
+        self.game = os.path.join(self.root, "game")
+        os.makedirs(self.game)
+
+    def _exe(self, imports):
+        path = os.path.join(self.game, "game.exe")
+        with open(path, "wb") as handle:
+            handle.write(build_pe(imports))
+        return path
+
+    def test_missing_dll_is_reported(self):
+        from pvc import diagnose
+
+        exe = self._exe(["KERNEL32.dll", "VCRUNTIME140_1.dll"])
+        open(os.path.join(self.system32, "kernel32.dll"), "w").close()
+        _, missing = diagnose.diagnose_exe(exe, self.compat, None)
+        self.assertEqual(missing, ["vcruntime140_1.dll"])
+
+    def test_dll_beside_the_exe_counts_as_found(self):
+        from pvc import diagnose
+
+        exe = self._exe(["GAMEENGINE.dll"])
+        open(os.path.join(self.game, "GameEngine.dll"), "w").close()
+        _, missing = diagnose.diagnose_exe(exe, self.compat, None)
+        self.assertEqual(missing, [])
+
+    def test_proton_builtins_count_as_found(self):
+        from pvc import diagnose
+
+        exe = self._exe(["D3D11.dll"])
+        builtin = os.path.join(self.root, "proton", "files", "lib64",
+                               "wine", "x86_64-windows")
+        os.makedirs(builtin)
+        open(os.path.join(builtin, "d3d11.dll"), "w").close()
+        _, missing = diagnose.diagnose_exe(
+            exe, self.compat, os.path.join(self.root, "proton"))
+        self.assertEqual(missing, [])
+
+    def test_vcredist_dlls_get_an_actionable_explanation(self):
+        from pvc import diagnose
+
+        self.assertIn("Visual C++", diagnose.explain("msvcp140.dll"))
+        self.assertIn("Media Foundation", diagnose.explain("mfplat.dll"))
+        self.assertEqual(diagnose.explain("somegame_engine.dll"), "")
+
+
+class ShortcutExes(unittest.TestCase):
+    def test_quoted_exe_path_is_unwrapped(self):
+        blob = bvdf_map("shortcuts", bvdf_map("0",
+                        bvdf_int("appid", -5)
+                        + bvdf_string("Exe", '"/games/My Game/game.exe"')
+                        + bvdf_string("AppName", "My Game")))
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, True)
+        config = os.path.join(root, "userdata", "1", "config")
+        os.makedirs(config)
+        with open(os.path.join(config, "shortcuts.vdf"), "wb") as handle:
+            handle.write(blob)
+        exes = steam.non_steam_exes(root)
+        self.assertEqual(exes[str(-5 & 0xFFFFFFFF)], "/games/My Game/game.exe")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
